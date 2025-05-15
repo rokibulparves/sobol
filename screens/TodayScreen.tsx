@@ -1,201 +1,231 @@
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
-import { Text, Card, Button, Divider } from '@rneui/themed';
-import { Icon } from '@rneui/themed';
-import { useNavigation } from '@react-navigation/native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { View, Text, StyleSheet, ActivityIndicator, ScrollView } from 'react-native';
+import { VideoView, useVideoPlayer } from 'expo-video'; // Added useVideoPlayer
+import { supabase } from '../lib/supabase';
+import { Button, Card } from '@rneui/themed';
 
-const TOTAL_DAYS = 60;
+interface VideoData {
+  id: number;
+  day_number: number;
+  title: string;
+  description: string;
+  filename: string;
+  videoUrl?: string;
+}
+
+interface UserProgress {
+  current_day: number;
+  last_completed_day: number;
+}
 
 const TodayScreen = () => {
-  const [currentDay, setCurrentDay] = useState(1);
-  const [maxUnlockedDay, setMaxUnlockedDay] = useState(1);
-  const navigation = useNavigation();
+  const [loading, setLoading] = useState(true);
+  const [videoData, setVideoData] = useState<VideoData | null>(null);
+  const [userProgress, setUserProgress] = useState<UserProgress | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Always call useVideoPlayer, but with a null/empty URL if no video data yet
+  // This ensures hooks are called in the same order on every render
+  const player = useVideoPlayer(videoData?.videoUrl || '', player => {
+    // Optional initial setup for player
+    if (videoData?.videoUrl) {
+      player.volume = 1.0;
+    }
+  });
 
-  // Sample content data - in a real app, this would come from an API or database
-  const dailyContent = [
-    {
-      day: 1,
-      title: "Introduction to Pelvic Floor Exercises",
-      type: "Video",
-      duration: "5:30",
-      description: "Learn the basics of pelvic floor exercises to build your foundation."
-    },
-    {
-      day: 2,
-      title: "Core Strength Fundamentals",
-      type: "Article",
-      duration: "8 min read",
-      description: "Understanding how core strength impacts sexual performance."
-    },
-    {
-      day: 3,
-      title: "Breathing Techniques",
-      type: "Video",
-      duration: "7:15",
-      description: "Master breathing techniques that enhance endurance and control."
-    },
-    {
-      day: 4,
-      title: "Hip Mobility Exercises",
-      type: "Video",
-      duration: "10:20",
-      description: "Improve flexibility and range of motion for better performance."
-    },
-    // Additional days would follow the same pattern
-  ];
+  const getCurrentUserAndVideo = async () => {
+    try {
+      setLoading(true);
+      
+      // Get current authenticated user
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) {
+        setError('User not found');
+        setLoading(false);
+        return;
+      }
+      
+      // Try to get user progress
+      let { data: progressData, error: progressError } = await supabase
+        .from('user_progress')
+        .select('current_day, last_completed_day')
+        .eq('user_id', user.id)
+        .single();
+      
+      // If no progress record exists yet, create one
+      if (progressError || !progressData) {
+        const { data: newProgressData, error: newProgressError } = await supabase
+          .from('user_progress')
+          .insert([
+            { user_id: user.id, current_day: 1, last_completed_day: 0 }
+          ])
+          .select()
+          .single();
+          
+        if (newProgressError) {
+          setError('Could not initialize user progress');
+          setLoading(false);
+          return;
+        }
+        
+        progressData = newProgressData;
+      }
+      
+      setUserProgress(progressData);
+      
+      // Get video for current day
+      const { data: video, error: videoError } = await supabase
+        .from('videos')
+        .select('*')
+        .eq('day_number', progressData.current_day)
+        .single();
+        
+      if (videoError || !video) {
+        setError('Video not found for today');
+        setLoading(false);
+        return;
+      }
+      
+      // Create video URL
+      const videoUrl = supabase.storage
+        .from('video-content')
+        .getPublicUrl(`videos/${video.filename}`).data.publicUrl;
+        
+      setVideoData({ ...video, videoUrl });
+    } catch (err) {
+      setError('An unexpected error occurred');
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  // Fill remaining days with placeholder content
-  for (let i = dailyContent.length + 1; i <= TOTAL_DAYS; i++) {
-    dailyContent.push({
-      day: i,
-      title: `Day ${i} Training`,
-      type: i % 2 === 0 ? "Article" : "Video",
-      duration: i % 2 === 0 ? "5 min read" : "8:30",
-      description: `Day ${i} training content will focus on building strength and endurance.`
-    });
+  useEffect(() => {
+    getCurrentUserAndVideo();
+  }, []);
+  
+  const markVideoAsComplete = async () => {
+    if (!videoData || !userProgress) return;
+    
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) return;
+      
+      const { error } = await supabase
+        .from('user_progress')
+        .update({
+          last_completed_day: videoData.day_number,
+          current_day: videoData.day_number + 1,
+          last_watched_at: new Date().toISOString()
+        })
+        .eq('user_id', user.id);
+        
+      if (error) throw error;
+      
+      // Update local state
+      setUserProgress({
+        ...userProgress,
+        last_completed_day: videoData.day_number,
+        current_day: videoData.day_number + 1
+      });
+      
+      // Reload to get next day's video
+      setLoading(true);
+      setVideoData(null);
+      getCurrentUserAndVideo();
+      
+    } catch (err) {
+      console.error('Error marking video as complete:', err);
+    }
+  };
+  
+  if (loading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color="#0284c7" />
+        <Text style={styles.loadingText}>Loading today's training...</Text>
+      </View>
+    );
+  }
+  
+  if (error) {
+    return (
+      <View style={styles.errorContainer}>
+        <Text style={styles.errorText}>{error}</Text>
+        <Button 
+          title="Try Again" 
+          onPress={() => {
+            setError(null);
+            setLoading(true);
+            getCurrentUserAndVideo();
+          }}
+          buttonStyle={styles.button}
+        />
+      </View>
+    );
+  }
+  
+  if (!videoData || !videoData.videoUrl) {
+    return (
+      <View style={styles.errorContainer}>
+        <Text style={styles.errorText}>No video available for today.</Text>
+      </View>
+    );
   }
 
-  // Load the user's progress from AsyncStorage on component mount
-  useEffect(() => {
-    const loadProgress = async () => {
-      try {
-        const storedProgress = await AsyncStorage.getItem('maxUnlockedDay');
-        if (storedProgress !== null) {
-          const progress = parseInt(storedProgress, 10);
-          setMaxUnlockedDay(progress);
-          
-          // If user already has progress, show them their latest unlocked day
-          setCurrentDay(progress);
-        }
-      } catch (error) {
-        console.error('Failed to load progress:', error);
-      }
-    };
-
-    loadProgress();
-  }, []);
-
-  // Save progress whenever maxUnlockedDay changes
-  useEffect(() => {
-    const saveProgress = async () => {
-      try {
-        await AsyncStorage.setItem('maxUnlockedDay', maxUnlockedDay.toString());
-      } catch (error) {
-        console.error('Failed to save progress:', error);
-      }
-    };
-
-    saveProgress();
-  }, [maxUnlockedDay]);
-
-  // Simulate completing the current day's content
-  const completeDay = () => {
-    if (currentDay === maxUnlockedDay && maxUnlockedDay < TOTAL_DAYS) {
-      setMaxUnlockedDay(prevMax => prevMax + 1);
-    }
-  };
-
-  // Navigate to previous day
-  const goToPreviousDay = () => {
-    if (currentDay > 1) {
-      setCurrentDay(prevDay => prevDay - 1);
-    }
-  };
-
-  // Navigate to next day
-  const goToNextDay = () => {
-    if (currentDay < maxUnlockedDay) {
-      setCurrentDay(prevDay => prevDay + 1);
-    }
-  };
-
-  // Get content for the current day
-  const getDayContent = () => {
-    return dailyContent.find(content => content.day === currentDay) || dailyContent[0];
-  };
-
-  const currentContent = getDayContent();
-
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.todayText}>Today</Text>
-        <View style={styles.progressBar}>
-          <Text style={styles.progressText}>
-            Last Longer{' '}
-            <Text style={styles.dayCounter}>
-              {'< Day '}{currentDay}{' of '}{TOTAL_DAYS}{' >'}
-            </Text>
-          </Text>
-        </View>
-      </View>
-
-      <ScrollView style={styles.contentContainer}>
-        <View style={styles.navigationControls}>
-          <TouchableOpacity 
-            style={[styles.navButton, currentDay === 1 && styles.disabledButton]} 
-            onPress={goToPreviousDay}
-            disabled={currentDay === 1}
-          >
-            <Icon name="chevron-left" type="font-awesome" size={20} color={currentDay === 1 ? "#cccccc" : "#000"} />
-          </TouchableOpacity>
-          
-          <Text style={styles.dayTitle}>Day {currentDay}</Text>
-          
-          <TouchableOpacity 
-            style={[styles.navButton, currentDay >= maxUnlockedDay && styles.disabledButton]} 
-            onPress={goToNextDay}
-            disabled={currentDay >= maxUnlockedDay}
-          >
-            <Icon name="chevron-right" type="font-awesome" size={20} color={currentDay >= maxUnlockedDay ? "#cccccc" : "#000"} />
-          </TouchableOpacity>
-        </View>
-
-        <Card containerStyle={styles.contentCard}>
-          <View style={styles.contentHeader}>
-            <Icon 
-              name={currentContent.type === "Video" ? "play-circle" : "file-text"} 
-              type="font-awesome" 
-              size={20} 
-              color="#0284c7" 
-            />
-            <Text style={styles.contentType}>{currentContent.type} • {currentContent.duration}</Text>
-          </View>
-          <Text style={styles.contentTitle}>{currentContent.title}</Text>
-          <Divider style={styles.divider} />
-          <Text style={styles.contentDescription}>{currentContent.description}</Text>
-        </Card>
-
-        <View style={styles.tipsContainer}>
-          <Text style={styles.tipsHeader}>Daily Tips</Text>
-          <Card containerStyle={styles.tipsCard}>
-            <Text style={styles.tipText}>Maintain proper hydration throughout your training routine.</Text>
-          </Card>
-          
-          <Card containerStyle={styles.tipsCard}>
-            <Text style={styles.tipText}>Focus on quality of exercises rather than quantity.</Text>
-          </Card>
-        </View>
-
-        {currentDay === maxUnlockedDay && maxUnlockedDay < TOTAL_DAYS && (
+    <ScrollView style={styles.container}>
+      <Card containerStyle={styles.card}>
+        <Card.Title style={styles.cardTitle}>Day {videoData.day_number}: {videoData.title}</Card.Title>
+        
+        {/* Updated to use VideoView with player prop */}
+        <VideoView
+          player={player}
+          style={styles.video}
+          allowsFullscreen
+          allowsPictureInPicture
+          nativeControls={true} // This is equivalent to useNativeControls
+        />
+        
+        <Text style={styles.description}>{videoData.description}</Text>
+        
+        <View style={styles.controlsContainer}>
           <Button
-            title="Mark Complete & Unlock Next Day"
-            containerStyle={styles.completeButtonContainer}
-            buttonStyle={styles.completeButton}
-            onPress={completeDay}
+            title="Play/Pause"
+            onPress={() => {
+              if (player.playing) {
+                player.pause();
+              } else {
+                player.play();
+              }
+            }}
+            buttonStyle={styles.controlButton}
           />
-        )}
-
-        {currentDay === TOTAL_DAYS && maxUnlockedDay === TOTAL_DAYS && (
-          <View style={styles.programCompleteContainer}>
-            <Text style={styles.programCompleteText}>
-              Congratulations! You've completed the 60-day program.
-            </Text>
+          
+          <Button
+            title="Mark as Completed"
+            onPress={markVideoAsComplete}
+            buttonStyle={styles.button}
+          />
+        </View>
+        
+        <View style={styles.progressContainer}>
+          <Text style={styles.progressText}>
+            Progress: Day {userProgress?.last_completed_day || 0} of 60 Completed
+          </Text>
+          <View style={styles.progressBarContainer}>
+            <View 
+              style={[
+                styles.progressBar, 
+                { width: `${((userProgress?.last_completed_day || 0) / 60) * 100}%` }
+              ]} 
+            />
           </View>
-        )}
-      </ScrollView>
-    </View>
+        </View>
+      </Card>
+    </ScrollView>
   );
 };
 
@@ -204,120 +234,75 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#f5f5f5',
   },
-  header: {
-    padding: 16,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e0e0e0',
+  card: {
+    borderRadius: 10,
+    marginBottom: 20,
   },
-  todayText: {
+  cardTitle: {
     fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 8,
-  },
-  progressBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  progressText: {
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  dayCounter: {
-    fontWeight: 'normal',
-    color: '#666',
-  },
-  contentContainer: {
-    flex: 1,
-    padding: 16,
-  },
-  navigationControls: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  navButton: {
-    padding: 8,
-    borderWidth: 1,
-    borderColor: '#e0e0e0',
-    borderRadius: 8,
-    backgroundColor: '#fff',
-  },
-  disabledButton: {
-    borderColor: '#f0f0f0',
-    backgroundColor: '#f8f8f8',
-  },
-  dayTitle: {
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  contentCard: {
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 16,
-  },
-  contentHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  contentType: {
-    fontSize: 14,
-    color: '#0284c7',
-    marginLeft: 8,
-  },
-  contentTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 8,
-  },
-  divider: {
-    marginVertical: 12,
-  },
-  contentDescription: {
-    fontSize: 14,
-    color: '#666',
-    lineHeight: 20,
-  },
-  tipsContainer: {
-    marginBottom: 24,
-  },
-  tipsHeader: {
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginBottom: 8,
-    marginLeft: 4,
-  },
-  tipsCard: {
-    borderRadius: 12,
-    padding: 16,
     marginBottom: 10,
   },
-  tipText: {
-    fontSize: 14,
-    color: '#555',
+  video: {
+    width: '100%',
+    height: 220,
+    borderRadius: 5,
+    marginBottom: 15,
   },
-  completeButtonContainer: {
-    marginBottom: 24,
+  description: {
+    fontSize: 16,
+    marginBottom: 20,
+    lineHeight: 22,
   },
-  completeButton: {
+  controlsContainer: {
+    marginBottom: 15,
+  },
+  controlButton: {
+    backgroundColor: '#6b7280',
+    borderRadius: 5,
+    marginBottom: 10,
+  },
+  button: {
     backgroundColor: '#0284c7',
-    borderRadius: 8,
-    padding: 12,
+    borderRadius: 5,
   },
-  programCompleteContainer: {
-    padding: 16,
-    backgroundColor: '#e0f7fa',
-    borderRadius: 12,
-    marginBottom: 24,
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
     alignItems: 'center',
   },
-  programCompleteText: {
+  loadingText: {
+    marginTop: 10,
     fontSize: 16,
-    color: '#00838f',
-    fontWeight: 'bold',
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  errorText: {
+    fontSize: 16,
+    marginBottom: 20,
     textAlign: 'center',
+    color: 'red',
+  },
+  progressContainer: {
+    marginTop: 10,
+  },
+  progressText: {
+    fontSize: 14,
+    marginBottom: 5,
+    textAlign: 'center',
+  },
+  progressBarContainer: {
+    height: 10,
+    backgroundColor: '#e0e0e0',
+    borderRadius: 5,
+    overflow: 'hidden',
+  },
+  progressBar: {
+    height: '100%',
+    backgroundColor: '#0284c7',
   },
 });
 
