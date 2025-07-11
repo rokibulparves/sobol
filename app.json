@@ -2,6 +2,7 @@
   "expo": {
     "name": "sobol",
     "slug": "sobol",
+    "scheme": "sobol",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -20,7 +21,8 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "package": "com.anonymous.sobol"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -32,7 +34,8 @@
           "supportsBackgroundPlayback": true,
           "supportsPictureInPicture": true
         }
-      ]
+      ],
+      "expo-web-browser"
     ]
   }
 }
