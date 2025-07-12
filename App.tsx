@@ -7,6 +7,7 @@ import { View } from 'react-native';
 import { Session } from '@supabase/supabase-js';
 import { NavigationContainer } from '@react-navigation/native';
 import AppNavigator from './navigation/AppNavigator';
+import RootNavigator from './navigation/RootNavigator';
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -55,7 +56,7 @@ export default function App() {
   return (
     <NavigationContainer>
       {session && session.user ? (
-        <AppNavigator session={session} />
+        <RootNavigator session={session} />
       ) : (
         <Auth />
       )}

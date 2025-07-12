@@ -39,23 +39,23 @@ const TodayScreen = () => {
   const getCurrentUserAndVideo = async (dayToLoad?: number) => {
     try {
       setLoading(true);
-      
+  
       // Get current authenticated user
       const { data: { user } } = await supabase.auth.getUser();
-      
+  
       if (!user) {
         setError('User not found');
         setLoading(false);
         return;
       }
-      
+  
       // Try to get user progress
       let { data: progressData, error: progressError } = await supabase
         .from('user_progress')
         .select('current_day, last_completed_day')
         .eq('user_id', user.id)
         .single();
-      
+  
       // If no progress record exists yet, create one
       if (progressError || !progressData) {
         const { data: newProgressData, error: newProgressError } = await supabase
@@ -65,49 +65,65 @@ const TodayScreen = () => {
           ])
           .select()
           .single();
-          
+  
         if (newProgressError) {
           setError('Could not initialize user progress');
           setLoading(false);
           return;
         }
-        
+  
         progressData = newProgressData;
       }
-      
+  
       setUserProgress(progressData);
-      
+  
       // Set current viewing day if not already set
       if (viewingDay === null) {
         setViewingDay(progressData.current_day);
       }
-      
+  
+      // Check if user is paid
+      const { data: profile, error: profileError } = await supabase
+        .from('profiles')
+        .select('is_paid')
+        .eq('id', user.id)
+        .single();
+  
+      const isPaid = !profileError && profile?.is_paid;
+  
       // Determine which day's video to load
       const dayNumber = dayToLoad !== undefined ? dayToLoad : (viewingDay || progressData.current_day);
-      
+  
+      // Restrict free users to only first 3 videos
+      if (!isPaid && dayNumber > 3) {
+        setError('This video is available for premium users only.');
+        setLoading(false);
+        return;
+      }
+  
       // Get video for specified day
       const { data: video, error: videoError } = await supabase
         .from('videos')
         .select('*')
         .eq('day_number', dayNumber)
         .single();
-        
+  
       if (videoError || !video) {
         setError(`Video not found for day ${dayNumber}`);
         setLoading(false);
         return;
       }
-      
+  
       // Create video URL
       const videoUrl = supabase.storage
         .from('video-content')
         .getPublicUrl(`videos/${video.filename}`).data.publicUrl;
-        
+  
       setVideoData({ ...video, videoUrl });
-      
+  
       // Update viewing day
       if (dayToLoad !== undefined) {
-        setViewingDay(dayToLoad);
+        setViewingDay(dayNumber);
       }
     } catch (err) {
       setError('An unexpected error occurred');
@@ -115,7 +131,7 @@ const TodayScreen = () => {
     } finally {
       setLoading(false);
     }
-  };
+  };  
 
   useEffect(() => {
     getCurrentUserAndVideo();
@@ -142,41 +158,45 @@ const TodayScreen = () => {
       getCurrentUserAndVideo(userProgress.current_day);
     };
 
-  const markVideoAsComplete = async () => {
-    if (!videoData || !userProgress) return;
+    const markVideoAsComplete = async () => {
+      if (!videoData || !userProgress) return;
     
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      
-      if (!user) return;
-      
-      const { error } = await supabase
-        .from('user_progress')
-        .update({
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+    
+        if (!user) return;
+    
+        const { error } = await supabase
+          .from('user_progress')
+          .update({
+            last_completed_day: videoData.day_number,
+            current_day: videoData.day_number + 1,
+            last_watched_at: new Date().toISOString()
+          })
+          .eq('user_id', user.id);
+    
+        if (error) throw error;
+    
+        // Update local state
+        const updatedDay = videoData.day_number + 1;
+    
+        setUserProgress({
+          ...userProgress,
           last_completed_day: videoData.day_number,
-          current_day: videoData.day_number + 1,
-          last_watched_at: new Date().toISOString()
-        })
-        .eq('user_id', user.id);
-        
-      if (error) throw error;
-      
-      // Update local state
-      setUserProgress({
-        ...userProgress,
-        last_completed_day: videoData.day_number,
-        current_day: videoData.day_number + 1
-      });
-      
-      // Reload to get next day's video
-      setLoading(true);
-      setVideoData(null);
-      getCurrentUserAndVideo();
-      
-    } catch (err) {
-      console.error('Error marking video as complete:', err);
-    }
-  };
+          current_day: updatedDay
+        });
+    
+        setViewingDay(updatedDay); // 🔄 important to reflect change in UI
+    
+        // Load the next day's video directly
+        setLoading(true);
+        setVideoData(null);
+        getCurrentUserAndVideo(updatedDay);
+    
+      } catch (err) {
+        console.error('Error marking video as complete:', err);
+      }
+    };    
   
   if (loading) {
     return (

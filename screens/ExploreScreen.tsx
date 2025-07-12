@@ -10,12 +10,13 @@ import {
 } from 'react-native';
 import { Icon } from '@rneui/themed';
 import { supabase } from '../lib/supabase';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 
 const ExploreScreen = () => {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [paymentLoading, setPaymentLoading] = useState(false);
+  const [isPremium, setIsPremium] = useState(false);
   const navigation = useNavigation();
 
   // Your server URL - make sure this matches your actual IP
@@ -27,11 +28,46 @@ const ExploreScreen = () => {
       if (error) {
         console.error('Session error:', error);
       }
-      setSession(data.session);
+      const currentSession = data.session;
+      setSession(currentSession);
+
+      // Check if user is already premium
+      if (currentSession?.user) {
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('is_paid')
+          .eq('id', currentSession.user.id)
+          .single();
+
+        if (!profileError && profile?.is_paid) {
+          setIsPremium(true);
+        }
+      }
+
       setLoading(false);
     };
     fetchSession();
   }, []);
+
+  useFocusEffect(
+    React.useCallback(() => {
+      const checkPaymentStatus = async () => {
+        if (!session?.user) return;
+  
+        const { data: profile, error } = await supabase
+          .from('profiles')
+          .select('is_paid')
+          .eq('id', session.user.id)
+          .single();
+  
+        if (!error && profile?.is_paid) {
+          setIsPremium(true);
+        }
+      };
+  
+      checkPaymentStatus();
+    }, [session])
+  );
 
   // Test server connection
   const testConnection = async () => {
@@ -59,9 +95,9 @@ const ExploreScreen = () => {
       Alert.alert('Not Logged In', 'Please log in first.');
       return;
     }
-
+  
     setPaymentLoading(true);
-
+  
     try {
       console.log('Initiating payment for user:', session.user.id);
       
@@ -69,9 +105,7 @@ const ExploreScreen = () => {
         user_id: session.user.id,
         amount: 100, // BDT
       };
-
-      console.log('Request body:', requestBody);
-
+  
       const response = await fetch(`${SERVER_URL}/api/payment/initiate`, {
         method: 'POST',
         headers: { 
@@ -80,51 +114,39 @@ const ExploreScreen = () => {
         },
         body: JSON.stringify(requestBody),
       });
-
-      console.log('Response status:', response.status);
-      console.log('Response headers:', response.headers);
-
-      // Get the raw response text first
+  
       const responseText = await response.text();
-      console.log('Raw response:', responseText);
-
+  
       if (!response.ok) {
         Alert.alert('Error', `Server error: ${response.status}\n${responseText}`);
         return;
       }
-
-      // Try to parse JSON
+  
       let data;
       try {
         data = JSON.parse(responseText);
-        console.log('Parsed response:', data);
       } catch (parseError) {
-        console.error('JSON parse error:', parseError);
         Alert.alert('Parse Error', `Server returned invalid JSON:\n${responseText}`);
         return;
       }
-
+  
       if (data?.success && data?.url) {
-        console.log('Opening payment URL:', data.url);
-        
-        // Check if the URL can be opened
         const canOpen = await Linking.canOpenURL(data.url);
         if (canOpen) {
-          await Linking.openURL(data.url);
+          navigation.navigate('Payment', { url: data.url });
         } else {
           Alert.alert('Error', 'Cannot open payment URL');
         }
       } else {
         Alert.alert('Payment Error', data?.error || 'Payment link not available.');
       }
-
+  
     } catch (error) {
-      console.error('Payment error:', error);
       Alert.alert('Network Error', `Could not connect to server:\n${error.message}`);
     } finally {
       setPaymentLoading(false);
     }
-  };
+  };  
 
   if (loading) {
     return (
@@ -174,10 +196,10 @@ const ExploreScreen = () => {
         {/* Subscribe Button */}
         <TouchableOpacity
           onPress={handleSubscribe}
-          disabled={paymentLoading}
+          disabled={paymentLoading || isPremium}
           style={{
             marginTop: 10,
-            backgroundColor: paymentLoading ? '#ccc' : '#ff9f1c',
+            backgroundColor: isPremium ? '#10b981' : (paymentLoading ? '#ccc' : '#ff9f1c'),
             paddingHorizontal: 20,
             paddingVertical: 10,
             borderRadius: 8,
@@ -185,11 +207,15 @@ const ExploreScreen = () => {
             alignItems: 'center',
           }}
         >
-          {paymentLoading && (
+          {paymentLoading && !isPremium && (
             <ActivityIndicator size="small" color="white" style={{ marginRight: 8 }} />
           )}
           <Text style={{ color: 'white', fontWeight: 'bold' }}>
-            {paymentLoading ? 'Processing...' : 'Subscribe (৳100)'}
+            {isPremium
+              ? 'Premium User'
+              : paymentLoading
+              ? 'Processing...'
+              : 'Subscribe (৳100)'}
           </Text>
         </TouchableOpacity>
       </View>
