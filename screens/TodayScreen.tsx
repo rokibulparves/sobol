@@ -1,11 +1,18 @@
 //TodayScreen.tsx
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, ScrollView, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, ActivityIndicator, ScrollView, TouchableOpacity, Modal } from 'react-native';
 import { useVideoPlayer } from 'expo-video';
 import { supabase } from '../lib/supabase';
 import { Button } from '@rneui/themed';
 import VideoList from './VideoList';
+import VideoCard from './VideoCard';
+import VideoDetailModal from './VideoDetailModal';
+import PremiumOnlyModal from './PremiumOnlyModal';
+import { useNavigation } from '@react-navigation/native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { RootStackParamList } from '../navigation/RootNavigator'; 
 import { AntDesign } from '@expo/vector-icons'; // Make sure to install @expo/vector-icons
+import { useFocusEffect } from '@react-navigation/native';
 
 interface VideoData {
   id: number;
@@ -27,7 +34,11 @@ const TodayScreen = () => {
   const [userProgress, setUserProgress] = useState<UserProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [viewingDay, setViewingDay] = useState<number | null>(null); // Track which day the user is viewing
-  
+  const [detailVisible, setDetailVisible] = useState(false);
+  const [showPremiumModal, setShowPremiumModal] = useState(false);
+  const [needsPremium, setNeedsPremium] = useState(false); // New state to track premium requirement
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+
   // Always call useVideoPlayer, but with a null/empty URL if no video data yet
   const player = useVideoPlayer(videoData?.videoUrl || '', player => {
     // Optional initial setup for player
@@ -36,9 +47,24 @@ const TodayScreen = () => {
     }
   });
 
+  // Refresh data when screen comes into focus (after purchasing premium)
+  useFocusEffect(
+    React.useCallback(() => {
+      if (needsPremium || showPremiumModal) {
+        // Reset premium states and reload
+        setNeedsPremium(false);
+        setShowPremiumModal(false);
+        getCurrentUserAndVideo();
+      }
+    }, [needsPremium, showPremiumModal])
+  );
+
   const getCurrentUserAndVideo = async (dayToLoad?: number) => {
     try {
       setLoading(true);
+      setError(null);
+      setNeedsPremium(false);
+      setShowPremiumModal(false);
   
       // Get current authenticated user
       const { data: { user } } = await supabase.auth.getUser();
@@ -96,8 +122,13 @@ const TodayScreen = () => {
   
       // Restrict free users to only first 3 videos
       if (!isPaid && dayNumber > 3) {
-        setError('This video is available for premium users only.');
         setLoading(false);
+        setNeedsPremium(true);
+        setShowPremiumModal(true);
+        // Update viewing day to show correct day number in UI
+        if (dayToLoad !== undefined) {
+          setViewingDay(dayNumber);
+        }
         return;
       }
   
@@ -223,6 +254,65 @@ const TodayScreen = () => {
       </View>
     );
   }
+
+  // Show premium modal if user needs premium (don't show "No video available")
+  if (needsPremium) {
+    return (
+      <ScrollView style={styles.container}>
+        {/* Day navigation controls - still show these even when premium is needed */}
+        <View style={styles.dayNavigationContainer}>
+          <TouchableOpacity 
+            onPress={goToPreviousDay} 
+            disabled={!viewingDay || viewingDay <= 1}
+            style={[styles.navButton, (!viewingDay || viewingDay <= 1) && styles.disabledButton]}
+          >
+            <AntDesign name="left" size={20} color={(!viewingDay || viewingDay <= 1) ? "#cccccc" : "#0284c7"} />
+          </TouchableOpacity>
+          
+          <Text style={styles.dayIndicator}>
+            Day {viewingDay || 1}
+            {(userProgress && viewingDay !== userProgress.current_day) && (
+              <TouchableOpacity onPress={goToCurrentDay}>
+                <Text style={styles.currentDayLink}> (Go to current day)</Text>
+              </TouchableOpacity>
+            )}
+          </Text>
+          
+          <TouchableOpacity 
+            onPress={goToNextDay} 
+            disabled={!viewingDay || !userProgress || viewingDay >= userProgress.current_day}
+            style={[styles.navButton, (!viewingDay || !userProgress || viewingDay >= userProgress.current_day) && styles.disabledButton]}
+          >
+            <AntDesign name="right" size={20} color={(!viewingDay || !userProgress || viewingDay >= userProgress.current_day) ? "#cccccc" : "#0284c7"} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Premium required message */}
+        <View style={styles.premiumRequiredContainer}>
+          <Text style={styles.premiumTitle}>Premium Content</Text>
+          <Text style={styles.premiumMessage}>
+            This video is available for premium users only. Upgrade to continue your journey!
+          </Text>
+          <Button
+            title="Buy Premium"
+            onPress={() => {
+              navigation.navigate('MainTabs', { screen: 'Explore' });
+            }}
+            buttonStyle={styles.premiumButton}
+          />
+        </View>
+
+        <PremiumOnlyModal
+          visible={showPremiumModal}
+          onClose={() => setShowPremiumModal(false)}
+          onUpgrade={() => {
+            setShowPremiumModal(false);
+            navigation.navigate('MainTabs', { screen: 'Explore' });
+          }}
+        />
+      </ScrollView>
+    );
+  }
   
   if (!videoData || !videoData.videoUrl) {
     return (
@@ -263,14 +353,28 @@ const TodayScreen = () => {
       </View>
       
       {/* Video section extracted to VideoList component */}
-      <VideoList
+      {/* <VideoList
         title={videoData.title}
         dayNumber={videoData.day_number}
         description={videoData.description}
         player={player}
+      /> */}
+      {/* Card with just the title */}
+      <VideoCard
+        dayNumber={videoData.day_number}
+        title={videoData.title}
+        onPress={() => setDetailVisible(true)}
+      />
+
+      {/* Detail modal */}
+      <VideoDetailModal
+        visible={detailVisible}
+        onClose={() => setDetailVisible(false)}
+        video={videoData}
+        navigation={navigation}   // ← comes from useNavigation or props
         onMarkComplete={markVideoAsComplete}
       />
-      
+
       {/* Progress section remains in TodayScreen */}
       <View style={styles.progressSection}>
         <Text style={styles.progressText}>
@@ -285,6 +389,15 @@ const TodayScreen = () => {
           />
         </View>
       </View>
+
+      <PremiumOnlyModal
+        visible={showPremiumModal}
+        onClose={() => setShowPremiumModal(false)}
+        onUpgrade={() => {
+          setShowPremiumModal(false);
+          navigation.navigate('MainTabs', { screen: 'Explore' });
+        }}
+      />
     </ScrollView>
   );
 };
@@ -383,6 +496,74 @@ const styles = StyleSheet.create({
     fontSize: 14,
     marginLeft: 5,
     textDecorationLine: 'underline',
+  },
+  // Premium required container styles
+  premiumRequiredContainer: {
+    backgroundColor: 'white',
+    margin: 10,
+    padding: 24,
+    borderRadius: 10,
+    alignItems: 'center',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+  },
+  premiumTitle: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 12,
+    color: '#1e293b',
+    textAlign: 'center',
+  },
+  premiumMessage: {
+    fontSize: 16,
+    color: '#64748b',
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 24,
+  },
+  premiumButton: {
+    backgroundColor: '#f59e0b',
+    borderRadius: 8,
+    paddingHorizontal: 32,
+    paddingVertical: 12,
+  },
+  // Modal styles (keeping the duplicate modal for backward compatibility)
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    padding: 24,
+  },
+  modalContent: {
+    backgroundColor: 'white',
+    borderRadius: 10,
+    padding: 24,
+    alignItems: 'center',
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    marginBottom: 12,
+    color: '#111827',
+  },
+  modalText: {
+    fontSize: 16,
+    textAlign: 'center',
+    marginBottom: 20,
+    color: '#374151',
+  },
+  premiumBtn: {
+    backgroundColor: '#f59e0b',
+    width: 180,
+    borderRadius: 6,
+    marginBottom: 10,
+  },
+  closeBtn: {
+    width: 180,
+    borderRadius: 6,
   },
 });
 
